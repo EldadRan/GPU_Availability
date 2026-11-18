@@ -99,6 +99,13 @@ table.data th:first-child, table.data td:first-child { text-align: left; }
   </div>
 
   <div class="card">
+    <h2>Vast.ai — price over time <span class="muted" id="vprice-scope"></span></h2>
+    <div class="muted">$/GPU-hr for the GPUs selected above (same colours). Multi-GPU offers are divided by GPU count.</div>
+    <div class="filters" style="margin:10px 0 6px"><span class="seg" id="vprice"></span></div>
+    <div class="chart-box"><canvas id="vast-price" aria-label="Vast price over time"></canvas></div>
+  </div>
+
+  <div class="card">
     <h2>Vast.ai — average by hour of day</h2>
     <div class="muted">Mean of the selected metric for each London hour across the range. Each row is shaded on its own scale (higher = further from the background colour), so read patterns within a GPU, not across.</div>
     <div id="vast-heat" style="margin-top:10px; overflow-x:auto"></div>
@@ -112,10 +119,16 @@ table.data th:first-child, table.data td:first-child { text-align: left; }
 
   <div class="card">
     <h2>RunPod — stock level over time <span class="muted" id="rp-scope"></span></h2>
-    <div class="muted">RunPod reports a stock level per GPU type (High / Medium / Low / none), not a count. This is the Pods pool, which serverless draws on, so treat it as a proxy for serverless availability.</div>
+    <div class="muted">Select up to 8 GPUs. RunPod reports a stock level per GPU type (High / Medium / Low / none), not a count. This is the Pods pool, which serverless draws on, so treat it as a proxy for serverless availability.</div>
     <div class="chips" id="rp-chips"></div>
     <div id="rp-timeline" style="overflow-x:auto"></div>
     <div class="legend" id="rp-legend"></div>
+  </div>
+
+  <div class="card">
+    <h2>RunPod — price over time <span class="muted" id="rpprice-scope"></span></h2>
+    <div class="muted">Lowest on-demand Pod $/GPU-hr for the GPUs selected above (same colours). Serverless rates are separate and higher; RunPod's API doesn't publish them.</div>
+    <div class="chart-box" style="margin-top:10px"><canvas id="rp-price" aria-label="RunPod price over time"></canvas></div>
   </div>
 
   <div class="card">
@@ -136,8 +149,8 @@ table.data th:first-child, table.data td:first-child { text-align: left; }
     <div style="overflow-x:auto; margin-top:8px"><table class="data" id="latest-vast"></table></div>
     <div style="overflow-x:auto; margin-top:16px"><table class="data" id="latest-rp"></table></div>
   </div>
-</div>
 <div id="tip" role="tooltip"></div>
+</div>
 
 <script>
 const TZ = "Europe/London";
@@ -149,8 +162,9 @@ const PRICE_METRICS = new Set(["min_price", "median_price", "eu_min_price"]);
 const DEFAULT_VAST = ["RTX 4090", "RTX 5090", "H100 NVL", "B200"];
 const DEFAULT_RP = ["4090", "5090", "H100", "B200"];
 
-const state = { range: 7, metric: "gpus", cloud: "secure", region: "All", rpDc: "All", vastSel: new Map(), rpSel: new Set() };
-let VAST = [], RP = [], VREG = [], RPDC = [], chart = null;
+const state = { range: 7, metric: "gpus", cloud: "secure", region: "All", rpDc: "All", vastSel: new Map(), rpSel: new Map(), vPrice: "min_price" };
+let VAST = [], RP = [], VREG = [], RPDC = [];
+const CHARTS = {};
 const REGION_ORDER = ["UK & Ireland", "Europe West", "Europe North", "Europe South", "Europe East", "North America", "South America", "Middle East", "Asia", "Oceania", "Africa", "Other"];
 const REGION_METRICS = new Set(["gpus", "dc_gpus", "min_price"]);
 
@@ -179,6 +193,45 @@ async function load(path) {
 }
 
 function inRange(ms) { return !state.range || ms >= Date.now() - state.range * 86400000; }
+
+function takeSlot(map, name) {
+  const used = new Set(map.values());
+  for (let s = 1; s <= SLOTS; s++) if (!used.has(s)) { map.set(name, s); return true; }
+  return false;
+}
+
+// series: [{name, slot, points:[{x,y}]}]; kind: metric key used for value formatting
+function lineChart(id, series, kind) {
+  const ink2 = css("--text-secondary"), grid = css("--grid");
+  const datasets = series.map(({ name, slot, points }) => {
+    const color = css("--s" + slot);
+    return { label: name, borderColor: color, backgroundColor: color, borderWidth: 2, pointRadius: 0,
+      pointHoverRadius: 4, pointHoverBorderColor: css("--surface-1"), pointHoverBorderWidth: 2,
+      tension: 0.2, spanGaps: true, data: points };
+  });
+  if (CHARTS[id]) CHARTS[id].destroy();
+  CHARTS[id] = new Chart(document.getElementById(id), {
+    type: "line", data: { datasets },
+    options: {
+      animation: false, maintainAspectRatio: false, parsing: false,
+      interaction: { mode: "nearest", axis: "x", intersect: false },
+      scales: {
+        x: { type: "linear", grid: { color: grid }, border: { display: false },
+             ticks: { color: ink2, maxTicksLimit: 8, callback: v => fmtTime(v) } },
+        y: { beginAtZero: !PRICE_METRICS.has(kind), grid: { color: grid }, border: { display: false },
+             ticks: { color: ink2, callback: v => fmtVal(v, kind) } }
+      },
+      plugins: {
+        legend: { position: "top", align: "start", labels: { color: ink2, boxWidth: 14, boxHeight: 2 } },
+        tooltip: {
+          backgroundColor: css("--surface-1"), titleColor: ink2, bodyColor: css("--text-primary"),
+          borderColor: css("--border"), borderWidth: 1, boxWidth: 12, boxHeight: 2,
+          callbacks: { title: it => fmtTime(it[0].parsed.x), label: c => ` ${fmtVal(c.parsed.y, kind)}  ${c.dataset.label}` }
+        }
+      }
+    }
+  });
+}
 
 // Colour follows the entity: a GPU keeps its slot while selected; a new pick takes the lowest free slot.
 function toggleVast(name) {
@@ -303,37 +356,17 @@ function render() {
   renderChips("vast-chips", vNames, n => state.vastSel.has(n),
     n => state.vastSel.has(n) ? css("--s" + state.vastSel.get(n)) : null, toggleVast);
 
-  const datasets = [...state.vastSel.entries()].map(([name, slot]) => {
-    const color = css("--s" + slot);
-    return {
-      label: name, borderColor: color, backgroundColor: color, borderWidth: 2, pointRadius: 0,
-      pointHoverRadius: 4, pointHoverBorderColor: css("--surface-1"), pointHoverBorderWidth: 2, tension: 0.2, spanGaps: true,
-      data: vastSeries(vRows, name, metric).map(p => ({ x: p.ms, y: p.v }))
-    };
-  });
-  const ink2 = css("--text-secondary"), grid = css("--grid");
-  if (chart) chart.destroy();
-  chart = new Chart(document.getElementById("vast-line"), {
-    type: "line", data: { datasets },
-    options: {
-      animation: false, maintainAspectRatio: false, parsing: false,
-      interaction: { mode: "nearest", axis: "x", intersect: false },
-      scales: {
-        x: { type: "linear", grid: { color: grid }, border: { display: false },
-             ticks: { color: ink2, maxTicksLimit: 8, callback: v => fmtTime(v) } },
-        y: { beginAtZero: !PRICE_METRICS.has(metric), grid: { color: grid }, border: { display: false },
-             ticks: { color: ink2, callback: v => fmtVal(v, metric) } }
-      },
-      plugins: {
-        legend: { position: "top", align: "start", labels: { color: ink2, boxWidth: 14, boxHeight: 2, usePointStyle: false } },
-        tooltip: {
-          backgroundColor: css("--surface-1"), titleColor: ink2, bodyColor: css("--text-primary"),
-          borderColor: css("--border"), borderWidth: 1, boxWidth: 12, boxHeight: 2,
-          callbacks: { title: it => fmtTime(it[0].parsed.x), label: c => ` ${fmtVal(c.parsed.y, metric)}  ${c.dataset.label}` }
-        }
-      }
-    }
-  });
+  lineChart("vast-line", [...state.vastSel.entries()].map(([name, slot]) => ({
+    name, slot, points: vastSeries(vRows, name, metric).map(p => ({ x: p.ms, y: p.v })) })), metric);
+
+  const priceOpts = state.region === "All"
+    ? [["Cheapest", "min_price"], ["Median", "median_price"], ["Cheapest in Europe", "eu_min_price"]]
+    : [["Cheapest in " + state.region, "min_price"]];
+  if (!priceOpts.some(o => o[1] === state.vPrice)) state.vPrice = "min_price";
+  renderSeg("vprice", priceOpts, state.vPrice, v => { state.vPrice = v; render(); });
+  document.getElementById("vprice-scope").textContent = state.region === "All" ? "· all regions" : "· " + state.region;
+  lineChart("vast-price", [...state.vastSel.entries()].map(([name, slot]) => ({
+    name, slot, points: vastSeries(vRows, name, state.vPrice).map(p => ({ x: p.ms, y: p.v })) })), state.vPrice);
 
   const vSelNames = [...state.vastSel.keys()];
   const vh = document.getElementById("vast-heat");
@@ -365,8 +398,12 @@ function render() {
   // ---------- RunPod ----------
   const rpRows = RP.filter(r => inRange(r.ms));
   const rpNames = [...new Set(RP.map(r => r.name))];
-  renderChips("rp-chips", rpNames, n => state.rpSel.has(n), () => null,
-    n => { state.rpSel.has(n) ? state.rpSel.delete(n) : state.rpSel.add(n); render(); });
+  renderChips("rp-chips", rpNames, n => state.rpSel.has(n),
+    n => state.rpSel.has(n) ? css("--s" + state.rpSel.get(n)) : null,
+    n => { if (state.rpSel.has(n)) state.rpSel.delete(n); else if (!takeSlot(state.rpSel, n)) return; render(); });
+  document.getElementById("rpprice-scope").textContent = `· ${state.cloud} cloud`;
+  lineChart("rp-price", [...state.rpSel.entries()].map(([name, slot]) => ({
+    name, slot, points: rpRows.filter(r => r.name === name).map(r => ({ x: r.ms, y: r[state.cloud + "_price"] })) })), "min_price");
   const rpSel = rpNames.filter(n => state.rpSel.has(n));
   document.getElementById("rp-scope").textContent = state.rpDc === "All" ? `· global, ${state.cloud} cloud` : `· datacenter ${state.rpDc} (secure + community combined)`;
   const tl = document.getElementById("rp-timeline");
@@ -491,7 +528,7 @@ async function init() {
   const vNames = [...new Set(VAST.map(r => r.gpu))];
   (DEFAULT_VAST.filter(n => vNames.includes(n)).length ? DEFAULT_VAST.filter(n => vNames.includes(n)) : vNames.slice(0, 4)).forEach(toggleVastSilent);
   const rpNames = [...new Set(RP.map(r => r.name))];
-  rpNames.filter(n => DEFAULT_RP.some(d => n.includes(d))).forEach(n => state.rpSel.add(n));
+  rpNames.filter(n => DEFAULT_RP.some(d => n.includes(d))).forEach(n => takeSlot(state.rpSel, n));
   document.getElementById("metric").onchange = e => { state.metric = e.target.value; render(); };
   render();
 }
