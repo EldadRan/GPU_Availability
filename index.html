@@ -188,8 +188,12 @@ function parseCSV(text) {
   return (body || []).map(r => Object.fromEntries(head.map((h, i) => [h, r[i]])));
 }
 
+// On GitHub Pages, read data straight from the repo so new snapshots show without waiting for a Pages rebuild.
+const DATA_BASE = location.hostname.endsWith("github.io")
+  ? `https://raw.githubusercontent.com/${location.hostname.split(".")[0]}/${location.pathname.split("/")[1]}/main/`
+  : "";
 async function load(path) {
-  try { const r = await fetch(path + "?t=" + Date.now()); if (!r.ok) return null; return await r.text(); } catch { return null; }
+  try { const r = await fetch(DATA_BASE + path + "?t=" + Date.now()); if (!r.ok) return null; return await r.text(); } catch { return null; }
 }
 
 function inRange(ms) { return !state.range || ms >= Date.now() - state.range * 86400000; }
