@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPU availability — Vast.ai &amp; RunPod</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<style>
+.viz-root {
+  color-scheme: light;
+  --surface-0: #f4f3f0; --surface-1: #fcfcfb; --border: #e2e0da; --grid: #ecebe6;
+  --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #7a7974;
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#008300; --s7:#6250d6; --s8:#e34948;
+  --seq-0:#f0efec; --seq-1:#cde2fb; --seq-2:#9ec5f4; --seq-3:#6da7ec; --seq-4:#3987e5; --seq-5:#256abf; --seq-6:#184f95; --seq-7:#0d366b;
+  --good:#0ca30c; --critical:#d03b3b;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) .viz-root {
+    color-scheme: dark;
+    --surface-0:#111110; --surface-1:#1a1a19; --border:#33332f; --grid:#2a2a27;
+    --text-primary:#f0efec; --text-secondary:#c3c2b7; --text-muted:#8f8e86;
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#0ca30c; --s7:#9085e9; --s8:#e66767;
+    --seq-0:#383835; --seq-1:#104281; --seq-2:#184f95; --seq-3:#1c5cab; --seq-4:#256abf; --seq-5:#3987e5; --seq-6:#6da7ec; --seq-7:#b7d3f6;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+.viz-root { background: var(--surface-0); color: var(--text-primary); min-height: 100vh; padding: 20px 24px 48px; }
+h1 { font-size: 20px; margin: 0 0 2px; }
+h2 { font-size: 15px; margin: 0 0 2px; }
+.sub { color: var(--text-secondary); font-size: 13px; margin: 0 0 12px; }
+.muted { color: var(--text-muted); font-size: 12px; }
+.status { display: flex; gap: 16px; flex-wrap: wrap; margin: 6px 0 16px; font-size: 13px; color: var(--text-secondary); }
+.dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align: 1px; }
+.filters { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; margin-bottom: 16px; }
+.filters label { color: var(--text-secondary); font-size: 13px; margin-right: 6px; }
+select, button { font: inherit; font-size: 13px; color: var(--text-primary); background: var(--surface-1);
+  border: 1px solid var(--border); border-radius: 6px; padding: 5px 9px; cursor: pointer; }
+.seg button { border-radius: 0; margin-left: -1px; }
+.seg button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+.seg button:last-child { border-radius: 0 6px 6px 0; }
+.seg button[aria-pressed="true"] { font-weight: 650; border-color: var(--text-secondary); position: relative; }
+.card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin-bottom: 16px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 12px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 3px 10px; font-size: 12.5px; }
+.chip .key { width: 14px; height: 2px; border-radius: 1px; background: var(--border); }
+.chip[aria-pressed="true"] { border-color: var(--text-secondary); font-weight: 600; }
+.chart-box { position: relative; height: 300px; }
+.heat { width: 100%; border-collapse: separate; border-spacing: 2px; font-size: 11.5px; }
+.heat th { color: var(--text-secondary); font-weight: 500; text-align: center; padding: 0 0 2px; }
+.heat th.row { text-align: left; padding-right: 8px; white-space: nowrap; font-weight: 600; color: var(--text-primary); }
+.heat td { height: 24px; border-radius: 3px; min-width: 18px; outline-offset: -1px; }
+.heat td.num { text-align: center; font-variant-numeric: tabular-nums; font-size: 11px; padding: 0 3px; }
+.heat td:hover, .heat td:focus { outline: 2px solid var(--text-primary); }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--text-secondary); margin-top: 8px; }
+.legend .sw { display:inline-block; width: 14px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+table.data { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+table.data th { text-align: right; color: var(--text-secondary); font-weight: 500; border-bottom: 1px solid var(--border); padding: 6px 8px; }
+table.data td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--grid); }
+table.data th:first-child, table.data td:first-child { text-align: left; }
+#tip { position: fixed; pointer-events: none; z-index: 10; background: var(--surface-1); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px; font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.15); display: none; }
+#tip b { font-size: 13px; }
+.two { display: grid; grid-template-columns: 1fr; gap: 16px; }
+.err { color: var(--critical); }
+.empty { color: var(--text-muted); padding: 30px 0; text-align: center; }
+</style>
+</head>
+<body>
+<div class="viz-root">
+  <h1>GPU availability</h1>
+  <p class="sub">Vast.ai marketplace (rentable, on-demand offers) and RunPod stock levels, sampled every ~20 minutes. Times shown in Europe/London.</p>
+  <div class="status" id="status"></div>
+
+  <div class="filters">
+    <div><label>Range</label><span class="seg" id="range"></span></div>
+    <div><label for="metric">Vast metric</label>
+      <select id="metric">
+        <option value="gpus">Available GPUs (all)</option>
+        <option value="dc_gpus">Available GPUs — datacenter</option>
+        <option value="eu_gpus">Available GPUs — Europe</option>
+        <option value="fast_net_gpus">Available GPUs — fast network</option>
+        <option value="reliable_gpus">Available GPUs — reliable hosts</option>
+        <option value="offers">Offers (machines)</option>
+        <option value="min_price">Cheapest $/GPU-hr</option>
+        <option value="median_price">Median $/GPU-hr</option>
+        <option value="eu_min_price">Cheapest Europe $/GPU-hr</option>
+      </select></div>
+    <div><label for="region">Vast region</label><select id="region"><option value="All">All regions</option></select></div>
+    <div><label>RunPod cloud</label><span class="seg" id="cloud"></span></div>
+    <div><label for="rpdc">RunPod datacenter</label><select id="rpdc"><option value="All">All (global stock)</option></select></div>
+  </div>
+
+  <div class="card">
+    <h2>Vast.ai — <span id="metric-title"></span> over time</h2>
+    <div class="muted">Select up to 8 GPUs. Colours stay with each GPU while it is selected.</div>
+    <div class="chips" id="vast-chips"></div>
+    <div class="chart-box"><canvas id="vast-line" aria-label="Vast availability over time"></canvas></div>
+  </div>
+
+  <div class="card">
+    <h2>Vast.ai — average by hour of day</h2>
+    <div class="muted">Mean of the selected metric for each London hour across the range. Each row is shaded on its own scale (higher = further from the background colour), so read patterns within a GPU, not across.</div>
+    <div id="vast-heat" style="margin-top:10px; overflow-x:auto"></div>
+  </div>
+
+  <div class="card">
+    <h2>Vast.ai — available GPUs by region</h2>
+    <div class="muted">Average available GPUs per region across the range (hover for the average cheapest $/GPU-hr). Each row is shaded on its own scale.</div>
+    <div id="vast-regions" style="margin-top:10px; overflow-x:auto"></div>
+  </div>
+
+  <div class="card">
+    <h2>RunPod — stock level over time <span class="muted" id="rp-scope"></span></h2>
+    <div class="muted">RunPod reports a stock level per GPU type (High / Medium / Low / none), not a count. This is the Pods pool, which serverless draws on, so treat it as a proxy for serverless availability.</div>
+    <div class="chips" id="rp-chips"></div>
+    <div id="rp-timeline" style="overflow-x:auto"></div>
+    <div class="legend" id="rp-legend"></div>
+  </div>
+
+  <div class="card">
+    <h2>RunPod — share of samples with stock, by hour of day</h2>
+    <div class="muted">Percentage of samples in each London hour where the GPU showed Low, Medium or High stock.</div>
+    <div id="rp-heat" style="margin-top:10px; overflow-x:auto"></div>
+  </div>
+
+  <div class="card">
+    <h2>RunPod — share of samples with stock, by datacenter</h2>
+    <div class="muted">Percentage of samples where the GPU showed any stock in that datacenter. A serverless endpoint with a network volume is tied to one datacenter, so this is the view to use when choosing where to put the volume.</div>
+    <div id="rp-dc" style="margin-top:10px; overflow-x:auto"></div>
+  </div>
+
+  <div class="card">
+    <h2>Latest snapshot</h2>
+    <div class="muted" id="latest-ts"></div>
+    <div style="overflow-x:auto; margin-top:8px"><table class="data" id="latest-vast"></table></div>
+    <div style="overflow-x:auto; margin-top:16px"><table class="data" id="latest-rp"></table></div>
+  </div>
+</div>
+<div id="tip" role="tooltip"></div>
+
+<script>
+const TZ = "Europe/London";
+const SLOTS = 8;
+const RANGES = [["24h", 1], ["3d", 3], ["7d", 7], ["30d", 30], ["All", 0]];
+const STOCK = { None: 0, Low: 1, Medium: 2, High: 3 };
+const STOCK_NAMES = ["None", "Low", "Medium", "High"];
+const PRICE_METRICS = new Set(["min_price", "median_price", "eu_min_price"]);
+const DEFAULT_VAST = ["RTX 4090", "RTX 5090", "H100 NVL", "B200"];
+const DEFAULT_RP = ["4090", "5090", "H100", "B200"];
+
+const state = { range: 7, metric: "gpus", cloud: "secure", region: "All", rpDc: "All", vastSel: new Map(), rpSel: new Set() };
+let VAST = [], RP = [], VREG = [], RPDC = [], chart = null;
+const REGION_ORDER = ["UK & Ireland", "Europe West", "Europe North", "Europe South", "Europe East", "North America", "South America", "Middle East", "Asia", "Oceania", "Africa", "Other"];
+const REGION_METRICS = new Set(["gpus", "dc_gpus", "min_price"]);
+
+const css = n => getComputedStyle(document.querySelector(".viz-root")).getPropertyValue(n).trim();
+const fmtTime = ms => new Intl.DateTimeFormat("en-GB", { timeZone: TZ, day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }).format(ms);
+const londonHour = ms => +new Intl.DateTimeFormat("en-GB", { timeZone: TZ, hour: "2-digit", hourCycle: "h23" }).format(ms);
+const el = (tag, props = {}, kids = []) => { const e = document.createElement(tag); Object.assign(e, props); kids.forEach(k => e.append(k)); return e; };
+
+function parseCSV(text) {
+  const rows = []; let row = [], cur = "", q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) { if (c === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += c; }
+    else if (c === '"') q = true;
+    else if (c === ",") { row.push(cur); cur = ""; }
+    else if (c === "\n" || c === "\r") { if (c === "\r" && text[i + 1] === "\n") i++; row.push(cur); cur = ""; if (row.length > 1 || row[0]) rows.push(row); row = []; }
+    else cur += c;
+  }
+  if (cur || row.length) { row.push(cur); rows.push(row); }
+  const [head, ...body] = rows;
+  return (body || []).map(r => Object.fromEntries(head.map((h, i) => [h, r[i]])));
+}
+
+async function load(path) {
+  try { const r = await fetch(path + "?t=" + Date.now()); if (!r.ok) return null; return await r.text(); } catch { return null; }
+}
+
+function inRange(ms) { return !state.range || ms >= Date.now() - state.range * 86400000; }
+
+// Colour follows the entity: a GPU keeps its slot while selected; a new pick takes the lowest free slot.
+function toggleVast(name) {
+  if (state.vastSel.has(name)) state.vastSel.delete(name);
+  else {
+    if (state.vastSel.size >= SLOTS) return;
+    const used = new Set(state.vastSel.values());
+    for (let s = 1; s <= SLOTS; s++) if (!used.has(s)) { state.vastSel.set(name, s); break; }
+  }
+  render();
+}
+
+function renderSeg(id, items, current, onPick) {
+  const box = document.getElementById(id); box.replaceChildren();
+  items.forEach(([label, val]) => {
+    const b = el("button", { type: "button", textContent: label });
+    b.setAttribute("aria-pressed", String(val === current));
+    b.onclick = () => onPick(val);
+    box.append(b);
+  });
+}
+
+function renderChips(id, names, isSel, colorOf, onToggle) {
+  const box = document.getElementById(id); box.replaceChildren();
+  names.forEach(n => {
+    const b = el("button", { type: "button", className: "chip" });
+    const key = el("span", { className: "key" });
+    const c = colorOf(n); if (c) key.style.background = c;
+    b.append(key, document.createTextNode(n));
+    b.setAttribute("aria-pressed", String(isSel(n)));
+    b.onclick = () => onToggle(n);
+    box.append(b);
+  });
+}
+
+const tip = document.getElementById("tip");
+function showTip(e, strong, rest) {
+  tip.replaceChildren(el("b", { textContent: strong }), el("div", { textContent: rest }));
+  tip.style.display = "block";
+  const x = Math.min(e.clientX + 14, innerWidth - tip.offsetWidth - 8);
+  tip.style.left = x + "px"; tip.style.top = (e.clientY + 14) + "px";
+}
+const hideTip = () => tip.style.display = "none";
+
+function fmtVal(v, metric) {
+  if (v == null || Number.isNaN(v)) return "—";
+  return PRICE_METRICS.has(metric) ? "$" + v.toFixed(2) : (Math.round(v * 10) / 10).toLocaleString();
+}
+
+function seqColor(t) { // t in [0,1] → sequential blue step 1..7
+  return css("--seq-" + Math.max(1, Math.min(7, 1 + Math.round(t * 6))));
+}
+
+function inkFor(hex) {
+  const h = hex.replace("#", ""); const [r, g, b] = [0, 2, 4].map(i => parseInt(h.substr(i, 2), 16) / 255)
+    .map(c => c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.35 ? "#0b0b0b" : "#ffffff";
+}
+
+// rows × cols matrix. opts: {colLabel, cellLabel(row,col), value(row,col), fmt, text, perRowScale}
+function matrixTable(rows, cols, o) {
+  const t = el("table", { className: "heat" });
+  t.append(el("tr", {}, [el("th"), ...cols.map(c => el("th", { textContent: o.colLabel ? o.colLabel(c) : c }))]));
+  rows.forEach(name => {
+    const vals = cols.map(c => o.value(name, c));
+    const nums = vals.filter(v => v != null);
+    const lo = Math.min(...nums), hi = Math.max(...nums);
+    const tr = el("tr", {}, [el("th", { className: "row", textContent: name })]);
+    vals.forEach((v, i) => {
+      const td = el("td", { tabIndex: 0 });
+      let bg = css("--seq-0");
+      if (v != null) bg = seqColor(o.perRowScale ? (hi > lo ? (v - lo) / (hi - lo) : 0.5) : v);
+      td.style.background = bg;
+      if (o.text && v != null) { td.className = "num"; td.textContent = o.text(v); td.style.color = inkFor(bg); }
+      const label = o.cellLabel(name, cols[i]);
+      const strong = v == null ? "No data" : o.fmt(v, name, cols[i]);
+      td.onpointermove = e => showTip(e, strong, label);
+      td.onfocus = () => { const r = td.getBoundingClientRect(); showTip({ clientX: r.right, clientY: r.bottom }, strong, label); };
+      td.onpointerleave = hideTip; td.onblur = hideTip;
+      td.setAttribute("aria-label", `${label}: ${strong}`);
+      tr.append(td);
+    });
+    t.append(tr);
+  });
+  return t;
+}
+const HOURS = [...Array(24).keys()];
+const hh = h => String(h).padStart(2, "0");
+function heatTable(rows, valueFn, fmt, perRowScale = true, tipLabel = "") {
+  return matrixTable(rows, HOURS, { colLabel: hh, value: valueFn, fmt: v => fmt(v), perRowScale,
+    cellLabel: (n, h) => `${n} · ${hh(h)}:00–${hh(h)}:59 London${tipLabel}` });
+}
+
+// Vast series for one GPU: global rows, or region rows zero-filled at every snapshot.
+function vastSeries(rows, name, metric) {
+  const g = rows.filter(r => r.gpu === name);
+  if (state.region === "All") return g.map(r => ({ ms: r.ms, hour: r.hour, v: r[metric] }));
+  const look = {}; VREG.forEach(r => { if (r.gpu === name && r.region === state.region) look[r.ms] = r; });
+  return g.map(r => { const x = look[r.ms]; return { ms: r.ms, hour: r.hour, v: x ? x[metric] : (PRICE_METRICS.has(metric) ? null : 0) }; });
+}
+
+// RunPod stock for one GPU at every snapshot: global (by cloud) or a single datacenter.
+function rpSeries(rows, name) {
+  const g = rows.filter(r => r.name === name);
+  if (state.rpDc === "All") return g.map(r => ({ ms: r.ms, hour: r.hour, s: r[state.cloud + "_stock"] }));
+  const look = {}; RPDC.forEach(r => { if (r.gpu === name && r.dc === state.rpDc) look[r.ms] = r.stock; });
+  return g.map(r => ({ ms: r.ms, hour: r.hour, s: look[r.ms] || "None" }));
+}
+
+function render() {
+  if (state.region !== "All" && !REGION_METRICS.has(state.metric)) { state.metric = "gpus"; document.getElementById("metric").value = "gpus"; }
+  const metric = state.metric;
+  const metricLabel = document.querySelector(`#metric option[value="${metric}"]`).textContent;
+  document.querySelectorAll("#metric option").forEach(op => op.disabled = state.region !== "All" && !REGION_METRICS.has(op.value));
+  document.getElementById("metric-title").textContent = metricLabel + (state.region === "All" ? "" : " — " + state.region);
+  renderSeg("range", RANGES, state.range, v => { state.range = v; render(); });
+  renderSeg("cloud", [["Secure", "secure"], ["Community", "community"]], state.cloud, v => { state.cloud = v; render(); });
+
+  // ---------- Vast ----------
+  const vRows = VAST.filter(r => inRange(r.ms));
+  const vNames = [...new Set(VAST.map(r => r.gpu))];
+  renderChips("vast-chips", vNames, n => state.vastSel.has(n),
+    n => state.vastSel.has(n) ? css("--s" + state.vastSel.get(n)) : null, toggleVast);
+
+  const datasets = [...state.vastSel.entries()].map(([name, slot]) => {
+    const color = css("--s" + slot);
+    return {
+      label: name, borderColor: color, backgroundColor: color, borderWidth: 2, pointRadius: 0,
+      pointHoverRadius: 4, pointHoverBorderColor: css("--surface-1"), pointHoverBorderWidth: 2, tension: 0.2, spanGaps: true,
+      data: vastSeries(vRows, name, metric).map(p => ({ x: p.ms, y: p.v }))
+    };
+  });
+  const ink2 = css("--text-secondary"), grid = css("--grid");
+  if (chart) chart.destroy();
+  chart = new Chart(document.getElementById("vast-line"), {
+    type: "line", data: { datasets },
+    options: {
+      animation: false, maintainAspectRatio: false, parsing: false,
+      interaction: { mode: "nearest", axis: "x", intersect: false },
+      scales: {
+        x: { type: "linear", grid: { color: grid }, border: { display: false },
+             ticks: { color: ink2, maxTicksLimit: 8, callback: v => fmtTime(v) } },
+        y: { beginAtZero: !PRICE_METRICS.has(metric), grid: { color: grid }, border: { display: false },
+             ticks: { color: ink2, callback: v => fmtVal(v, metric) } }
+      },
+      plugins: {
+        legend: { position: "top", align: "start", labels: { color: ink2, boxWidth: 14, boxHeight: 2, usePointStyle: false } },
+        tooltip: {
+          backgroundColor: css("--surface-1"), titleColor: ink2, bodyColor: css("--text-primary"),
+          borderColor: css("--border"), borderWidth: 1, boxWidth: 12, boxHeight: 2,
+          callbacks: { title: it => fmtTime(it[0].parsed.x), label: c => ` ${fmtVal(c.parsed.y, metric)}  ${c.dataset.label}` }
+        }
+      }
+    }
+  });
+
+  const vSelNames = [...state.vastSel.keys()];
+  const vh = document.getElementById("vast-heat");
+  if (!vSelNames.length || !vRows.length) vh.replaceChildren(el("div", { className: "empty", textContent: "No data in this range yet." }));
+  else {
+    const agg = {};
+    vSelNames.forEach(n => vastSeries(vRows, n, metric).forEach(p => { if (p.v == null) return; (agg[n + "|" + p.hour] ||= []).push(p.v); }));
+    vh.replaceChildren(heatTable(vSelNames, (n, h) => { const a = agg[n + "|" + h]; return a ? a.reduce((s, x) => s + x, 0) / a.length : null; },
+      v => fmtVal(v, metric) + " avg", true, " · " + metricLabel));
+  }
+
+  const vr = document.getElementById("vast-regions");
+  const stampsV = [...new Set(vRows.map(r => r.ms))];
+  const vrRows = VREG.filter(r => inRange(r.ms));
+  const regs = REGION_ORDER.filter(g => vrRows.some(r => r.region === g));
+  if (!vSelNames.length || !regs.length || !stampsV.length) vr.replaceChildren(el("div", { className: "empty", textContent: "No regional data in this range yet." }));
+  else {
+    const sum = {}, price = {};
+    vrRows.forEach(r => { const k = r.gpu + "|" + r.region; sum[k] = (sum[k] || 0) + (r.gpus || 0); if (r.min_price != null) (price[k] ||= []).push(r.min_price); });
+    const nStamps = n => new Set(vRows.filter(r => r.gpu === n).map(r => r.ms)).size || 1;
+    vr.replaceChildren(matrixTable(vSelNames, regs, {
+      value: (n, g) => (sum[n + "|" + g] || 0) / nStamps(n),
+      text: v => v >= 10 ? Math.round(v) : (Math.round(v * 10) / 10),
+      fmt: (v, n, g) => { const p = price[n + "|" + g]; return `${Math.round(v * 10) / 10} GPUs avg` + (p ? ` · cheapest avg $${(p.reduce((a, b) => a + b, 0) / p.length).toFixed(2)}/hr` : ""); },
+      perRowScale: true, cellLabel: (n, g) => `${n} · ${g}`
+    }));
+  }
+
+  // ---------- RunPod ----------
+  const rpRows = RP.filter(r => inRange(r.ms));
+  const rpNames = [...new Set(RP.map(r => r.name))];
+  renderChips("rp-chips", rpNames, n => state.rpSel.has(n), () => null,
+    n => { state.rpSel.has(n) ? state.rpSel.delete(n) : state.rpSel.add(n); render(); });
+  const rpSel = rpNames.filter(n => state.rpSel.has(n));
+  document.getElementById("rp-scope").textContent = state.rpDc === "All" ? `· global, ${state.cloud} cloud` : `· datacenter ${state.rpDc} (secure + community combined)`;
+  const tl = document.getElementById("rp-timeline");
+  const stamps = [...new Set(rpRows.map(r => r.ms))].sort((a, b) => a - b);
+  if (!rpSel.length || !stamps.length) tl.replaceChildren(el("div", { className: "empty", textContent: "No data in this range yet." }));
+  else {
+    const look = {}; rpSel.forEach(n => rpSeries(rpRows, n).forEach(p => look[n + "|" + p.ms] = p.s));
+    const t = el("table", { className: "heat" }); t.style.borderSpacing = "1px 3px";
+    const cellW = Math.max(3, Math.min(18, Math.floor(900 / stamps.length)));
+    rpSel.forEach(n => {
+      const tr = el("tr", {}, [el("th", { className: "row", textContent: n })]);
+      stamps.forEach(ms => {
+        const s = look[n + "|" + ms]; const lvl = s == null ? null : (STOCK[s] ?? 0);
+        const td = el("td", { tabIndex: -1 });
+        td.style.minWidth = cellW + "px"; td.style.height = "20px"; td.style.borderRadius = "2px";
+        td.style.background = lvl == null ? "transparent" : (lvl === 0 ? css("--seq-0") : css("--seq-" + [0, 2, 4, 6][lvl]));
+        const strong = lvl == null ? "No sample" : STOCK_NAMES[lvl];
+        td.onpointermove = e => showTip(e, strong, `${n} · ${fmtTime(ms)} · ${state.rpDc === "All" ? state.cloud + " cloud" : state.rpDc}`);
+        td.onpointerleave = hideTip;
+        tr.append(td);
+      });
+      t.append(tr);
+    });
+    tl.replaceChildren(t, el("div", { className: "muted", textContent: `${fmtTime(stamps[0])} → ${fmtTime(stamps[stamps.length - 1])}` }));
+  }
+  const lg = document.getElementById("rp-legend"); lg.replaceChildren();
+  [["None / out", "--seq-0"], ["Low", "--seq-2"], ["Medium", "--seq-4"], ["High", "--seq-6"]].forEach(([lab, v]) => {
+    const sw = el("span", { className: "sw" }); sw.style.background = css(v);
+    lg.append(el("span", {}, [sw, document.createTextNode(lab)]));
+  });
+
+  const rh = document.getElementById("rp-heat");
+  if (!rpSel.length || !rpRows.length) rh.replaceChildren(el("div", { className: "empty", textContent: "No data in this range yet." }));
+  else {
+    const agg = {};
+    rpSel.forEach(n => rpSeries(rpRows, n).forEach(p => { const k = n + "|" + p.hour; (agg[k] ||= [0, 0]); agg[k][1]++; if ((STOCK[p.s] ?? 0) > 0) agg[k][0]++; }));
+    rh.replaceChildren(heatTable(rpSel, (n, h) => { const a = agg[n + "|" + h]; return a ? a[0] / a[1] : null; },
+      v => Math.round(v * 100) + "% with stock", false, state.rpDc === "All" ? ` · ${state.cloud} cloud` : ` · ${state.rpDc}`));
+  }
+
+  const rd = document.getElementById("rp-dc");
+  const dcRows = RPDC.filter(r => inRange(r.ms));
+  const dcs = [...new Set(RPDC.map(r => r.dc))].sort();
+  if (!rpSel.length || !dcs.length || !stamps.length) rd.replaceChildren(el("div", { className: "empty", textContent: "No datacenter data in this range yet." }));
+  else {
+    const hits = {}; dcRows.forEach(r => { if ((STOCK[r.stock] ?? 0) > 0) { const k = r.gpu + "|" + r.dc; hits[k] = (hits[k] || 0) + 1; } });
+    const loc = {}; RPDC.forEach(r => loc[r.dc] = r.location);
+    rd.replaceChildren(matrixTable(rpSel, dcs, {
+      value: (n, d) => (hits[n + "|" + d] || 0) / stamps.length,
+      text: v => Math.round(v * 100), fmt: v => Math.round(v * 100) + "% of samples with stock",
+      perRowScale: false, cellLabel: (n, d) => `${n} · ${d}${loc[d] ? " (" + loc[d] + ")" : ""}`
+    }));
+  }
+
+  // ---------- Latest tables ----------
+  const lastV = Math.max(0, ...VAST.map(r => r.ms)), lastR = Math.max(0, ...RP.map(r => r.ms));
+  document.getElementById("latest-ts").textContent =
+    `Vast: ${lastV ? fmtTime(lastV) : "—"} · RunPod: ${lastR ? fmtTime(lastR) : "—"}`;
+  const tv = document.getElementById("latest-vast");
+  const vh2 = ["GPU", "GPUs", "Datacenter", "Europe", "Fast net", "Reliable", "Offers", "Cheapest $/hr", "Median $/hr", "Cheapest EU $/hr"];
+  tv.replaceChildren(el("tr", {}, vh2.map(h => el("th", { textContent: h }))));
+  VAST.filter(r => r.ms === lastV).forEach(r => tv.append(el("tr", {}, [
+    r.gpu, r.gpus, r.dc_gpus, r.eu_gpus, r.fast_net_gpus, r.reliable_gpus, r.offers,
+    fmtVal(r.min_price, "min_price"), fmtVal(r.median_price, "min_price"), fmtVal(r.eu_min_price, "min_price")
+  ].map(v => el("td", { textContent: String(v ?? "—") })))));
+  const tr2 = document.getElementById("latest-rp");
+  tr2.replaceChildren(el("tr", {}, ["RunPod GPU", "VRAM", "Secure stock", "Community stock", "Secure $/hr", "Community $/hr"].map(h => el("th", { textContent: h }))));
+  RP.filter(r => r.ms === lastR).forEach(r => tr2.append(el("tr", {}, [
+    r.name, r.vram_gb ? r.vram_gb + " GB" : "—", r.secure_stock, r.community_stock,
+    fmtVal(r.secure_price, "min_price"), fmtVal(r.community_price, "min_price")
+  ].map(v => el("td", { textContent: String(v ?? "—") })))));
+}
+
+async function init() {
+  const [v, r, s] = await Promise.all([load("data/vast.csv"), load("data/runpod.csv"), load("data/status.json")]);
+  // Monthly regional shards: walk back from the current month until one is missing (max 12).
+  const months = []; const d0 = new Date();
+  for (let i = 0; i < 12; i++) { const d = new Date(Date.UTC(d0.getUTCFullYear(), d0.getUTCMonth() - i, 1)); months.push(d.toISOString().slice(0, 7)); }
+  const vShards = [], rShards = [];
+  for (const m of months) {
+    const [a, b] = await Promise.all([load(`data/regions/vast-${m}.csv`), load(`data/regions/runpod-${m}.csv`)]);
+    if (!a && !b) break; if (a) vShards.push(a); if (b) rShards.push(b);
+  }
+  const num = x => (x === "" || x == null || x === "None") ? null : +x;
+  VAST = v ? parseCSV(v).map(o => {
+    const ms = Date.parse(o.ts);
+    const out = { ms, hour: londonHour(ms), gpu: o.gpu };
+    ["offers", "gpus", "single_gpu_offers", "dc_gpus", "eu_gpus", "fast_net_gpus", "reliable_gpus", "min_price", "median_price", "eu_min_price"].forEach(k => out[k] = num(o[k]));
+    return out;
+  }).filter(o => !Number.isNaN(o.ms)) : [];
+  RP = r ? parseCSV(r).map(o => {
+    const ms = Date.parse(o.ts);
+    return { ms, hour: londonHour(ms), name: o.name || o.gpu_id, vram_gb: num(o.vram_gb),
+      secure_stock: o.secure_stock || "None", community_stock: o.community_stock || "None",
+      secure_price: num(o.secure_price), community_price: num(o.community_price) };
+  }).filter(o => !Number.isNaN(o.ms)) : [];
+
+  VREG = vShards.flatMap(t => parseCSV(t)).map(o => ({ ms: Date.parse(o.ts), gpu: o.gpu, region: o.region,
+    gpus: num(o.gpus), dc_gpus: num(o.dc_gpus), min_price: num(o.min_price) })).filter(o => !Number.isNaN(o.ms));
+  RPDC = rShards.flatMap(t => parseCSV(t)).map(o => ({ ms: Date.parse(o.ts), dc: o.dc, location: o.location, gpu: o.gpu, stock: o.stock }))
+    .filter(o => !Number.isNaN(o.ms));
+  const regSel = document.getElementById("region");
+  REGION_ORDER.filter(g => VREG.some(r => r.region === g)).forEach(g => regSel.append(el("option", { value: g, textContent: g })));
+  regSel.onchange = e => { state.region = e.target.value; render(); };
+  const dcSel = document.getElementById("rpdc");
+  const dcLoc = {}; RPDC.forEach(r => dcLoc[r.dc] = r.location);
+  Object.keys(dcLoc).sort().forEach(d => dcSel.append(el("option", { value: d, textContent: dcLoc[d] ? `${d} · ${dcLoc[d]}` : d })));
+  dcSel.onchange = e => { state.rpDc = e.target.value; render(); };
+
+  const st = document.getElementById("status"); st.replaceChildren();
+  if (s) {
+    const j = JSON.parse(s);
+    ["vast", "runpod"].forEach(k => {
+      const ok = j[k] && j[k].ok; const d = el("span", { className: "dot" });
+      d.style.background = ok ? css("--good") : css("--critical");
+      st.append(el("span", {}, [d, document.createTextNode(
+        `${k === "vast" ? "Vast.ai" : "RunPod"}: ${ok ? "last run OK" : "last run failed — " + ((j[k] && j[k].error) || "unknown")}`)]));
+    });
+    st.append(el("span", { textContent: `Last run ${fmtTime(Date.parse(j.ts))}` }));
+  } else st.append(el("span", { textContent: "No runs yet — trigger the workflow once from the Actions tab." }));
+
+  const vNames = [...new Set(VAST.map(r => r.gpu))];
+  (DEFAULT_VAST.filter(n => vNames.includes(n)).length ? DEFAULT_VAST.filter(n => vNames.includes(n)) : vNames.slice(0, 4)).forEach(toggleVastSilent);
+  const rpNames = [...new Set(RP.map(r => r.name))];
+  rpNames.filter(n => DEFAULT_RP.some(d => n.includes(d))).forEach(n => state.rpSel.add(n));
+  document.getElementById("metric").onchange = e => { state.metric = e.target.value; render(); };
+  render();
+}
+function toggleVastSilent(n) { const used = new Set(state.vastSel.values()); for (let s = 1; s <= SLOTS; s++) if (!used.has(s)) { state.vastSel.set(n, s); return; } }
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => render());
+init();
+</script>
+</body>
+</html>
