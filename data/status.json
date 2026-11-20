@@ -1,8 +1,8 @@
 {
- "ts": "2026-11-20T14:20:00Z",
+ "ts": "2026-11-20T15:20:00Z",
  "vast": {
-  "ok": true,
-  "rows": 14
+  "ok": false,
+  "error": "HTTP Error 429: Too Many Requests"
  },
  "runpod": {
   "ok": true,
