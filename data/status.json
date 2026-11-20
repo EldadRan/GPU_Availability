@@ -1,9 +1,9 @@
 {
- "ts": "2026-11-20T19:20:00Z",
+ "ts": "2026-11-20T20:20:00Z",
  "vast": {
   "ok": false,
   "paused_until": "2026-11-21T00:00:00Z",
-  "error": "Paused: Vast search limit hit, resumes 2026-11-21T00:00:00Z ({\"error\":\"search_quota_exceeded\",\"msg\":\"Daily search row quota exhausted\",\"retry_after\":16767,\"limit\":20000,\"remaining\":0})"
+  "error": "Paused: Vast search limit hit, resumes 2026-11-21T00:00:00Z"
  },
  "runpod": {
   "ok": true,
