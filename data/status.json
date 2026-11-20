@@ -1,11 +1,12 @@
 {
- "ts": "2026-11-20T18:20:00Z",
+ "ts": "2026-11-20T19:20:00Z",
  "vast": {
   "ok": false,
-  "error": "HTTP Error 429: Too Many Requests"
+  "paused_until": "2026-11-21T00:00:00Z",
+  "error": "Paused: Vast search limit hit, resumes 2026-11-21T00:00:00Z ({\"error\":\"search_quota_exceeded\",\"msg\":\"Daily search row quota exhausted\",\"retry_after\":16767,\"limit\":20000,\"remaining\":0})"
  },
  "runpod": {
   "ok": true,
-  "rows": 20
+  "rows": 17
  }
 }
