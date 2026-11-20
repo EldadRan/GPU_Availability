@@ -16,7 +16,17 @@
     "H200",
     "B200"
   ],
-  "_runpod_comment": "Substring matches against RunPod gpuTypes displayName/id. Leave empty to record every GPU type.",
+  "_vast_groups_comment": "Each group is one search call (Vast has a daily search quota). GPUs not listed get their own call. Keep each group under ~500 offers: the API caps results at ~512.",
+  "vast_query_groups": [
+    ["RTX 4090"],
+    ["RTX 5090"],
+    ["L40S", "L40", "RTX 6000Ada", "A40", "RTX A6000", "RTX PRO 6000 WS", "RTX PRO 6000 S",
+     "H100 PCIE", "H100 SXM", "H100 NVL", "H200", "B200"]
+  ],
+  "vast_call_gap_s": 5,
+  "vast_result_cap": 512,
+  "_runpod_comment": "Whole-word matches against RunPod gpuTypes displayName/id (A40 does not match A4000). Names containing anything in runpod_exclude are skipped. Leave runpod_gpus empty to record every GPU type.",
+  "runpod_exclude": ["MIG"],
   "runpod_gpus": [
     "4090",
     "5090",

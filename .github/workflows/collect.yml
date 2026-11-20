@@ -1,7 +1,12 @@
 name: Collect GPU availability
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      discover:
+        description: "Also refresh data/vast_gpu_names.json (one extra Vast search)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -21,6 +26,7 @@ jobs:
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+          VAST_DISCOVER: ${{ inputs.discover && '1' || '0' }}
         run: python3 collector/collect.py
 
       - name: Commit data

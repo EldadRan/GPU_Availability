@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Snapshot GPU availability on Vast.ai and RunPod and append it to CSV files.
 
-Run every 20 minutes by .github/workflows/collect.yml. Standard library only.
+Run hourly by an external cron calling .github/workflows/collect.yml. Standard library only.
 
 Env:
   RUNPOD_API_KEY  required for RunPod (read-only key is enough)
@@ -10,12 +10,14 @@ Env:
 import csv
 import json
 import os
+import re
 import statistics
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -74,18 +76,50 @@ def r4(x):
 
 # ---------------- Vast.ai ----------------
 
+class VastPaused(Exception):
+    """Vast returned 429. Its search quota is daily and resets at 00:00 UTC, so stop until then."""
+    def __init__(self, until, detail=""):
+        super().__init__(f"Paused: Vast search limit hit, resumes {until}" + (f" ({detail})" if detail else ""))
+        self.until = until
+
+
+def next_utc_midnight():
+    now = datetime.now(timezone.utc)
+    return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0).isoformat().replace("+00:00", "Z")
+
+
 def vast_search(query):
+    """One GET per call. No POST fallback: every attempt counts against the daily quota."""
     headers = {}
     key = os.environ.get("VAST_API_KEY")
     if key:
         headers["Authorization"] = f"Bearer {key}"
-    # GET with ?q= is what the vastai CLI uses; fall back to POST body.
+    url = VAST_URL + "?q=" + urllib.parse.quote(json.dumps(query))
     try:
-        url = VAST_URL + "?q=" + urllib.parse.quote(json.dumps(query))
         res = http_json(url, headers=headers)
-    except Exception:
-        res = http_json(VAST_URL, body=query, headers=headers)
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            body = ""
+            try:
+                body = e.read().decode(errors="replace").strip()[:200]
+            except Exception:
+                pass
+            print(f"vast 429: {body}", file=sys.stderr)
+            raise VastPaused(next_utc_midnight(), body)
+        raise
     return res.get("offers", []) if isinstance(res, dict) else []
+
+
+def vast_paused_until():
+    """Pause carried over from the previous run's status.json, if still in force."""
+    try:
+        prev = json.loads((DATA / "status.json").read_text()).get("vast", {})
+        until = prev.get("paused_until")
+        if until and datetime.now(timezone.utc) < datetime.fromisoformat(until.replace("Z", "+00:00")):
+            return until
+    except Exception:
+        pass
+    return None
 
 
 def vast_country(o):
@@ -97,64 +131,93 @@ def vast_is_dc(o):
     return bool(o.get("hosting_type") == 1 or o.get("datacenter") or o.get("is_datacenter"))
 
 
-def collect_vast(ts):
-    eu = set(CONFIG["eu_countries"])
-    rows, region_rows = [], []
-    for name in CONFIG["vast_gpus"]:
-        q = {
-            "gpu_name": {"eq": name},
-            "rentable": {"eq": True},
-            "rented": {"eq": False},
-            "type": "on-demand",
-            "limit": 3000,
-        }
-        offers = vast_search(q)
-        per_gpu, eu_prices = [], []
-        by_region = {}
-        gpus = single = dc = eu_g = fast = rel = 0
-        for o in offers:
-            n = int(o.get("num_gpus") or 1)
-            price = o.get("dph_total")
-            gpus += n
-            if n == 1:
-                single += 1
-            if vast_is_dc(o):
-                dc += n
-            cc = vast_country(o)
-            is_eu = cc in eu
-            reg = by_region.setdefault(region_of(cc), {"gpus": 0, "dc": 0, "prices": []})
-            reg["gpus"] += n
-            if vast_is_dc(o):
-                reg["dc"] += n
-            if price:
-                reg["prices"].append(price / n)
-            if is_eu:
-                eu_g += n
-            if (o.get("inet_down") or 0) >= CONFIG["fast_net_mbps"]:
-                fast += n
-            if (o.get("reliability2") or o.get("reliability") or 0) >= CONFIG["min_reliability"]:
-                rel += n
-            if price:
-                per_gpu.append(price / n)
-                if is_eu:
-                    eu_prices.append(price / n)
-        rows.append({
-            "ts": ts, "gpu": name, "offers": len(offers), "gpus": gpus,
-            "single_gpu_offers": single, "dc_gpus": dc, "eu_gpus": eu_g,
-            "fast_net_gpus": fast, "reliable_gpus": rel,
-            "min_price": r4(min(per_gpu)) if per_gpu else None,
-            "median_price": r4(statistics.median(per_gpu)) if per_gpu else None,
-            "eu_min_price": r4(min(eu_prices)) if eu_prices else None,
-        })
-        for reg, a in sorted(by_region.items()):
-            region_rows.append({"ts": ts, "gpu": name, "region": reg, "gpus": a["gpus"], "dc_gpus": a["dc"],
-                                "min_price": r4(min(a["prices"])) if a["prices"] else None})
-        time.sleep(1)  # be polite
-    append_rows(DATA / "vast.csv", VAST_FIELDS, rows)
-    append_rows(shard("vast", ts), VAST_REGION_FIELDS, region_rows)
+def vast_groups():
+    """Query groups from config: each group is one API call. Any configured GPU not in a group gets its own call."""
+    groups = [list(g) for g in CONFIG.get("vast_query_groups", [])]
+    grouped = {n for g in groups for n in g}
+    groups += [[n] for n in CONFIG["vast_gpus"] if n not in grouped]
+    return groups
 
-    # Name discovery: what GPU names exist right now (helps fix config.json).
+
+def summarise_vast(ts, name, offers, eu):
+    per_gpu, eu_prices = [], []
+    by_region = {}
+    gpus = single = dc = eu_g = fast = rel = 0
+    for o in offers:
+        n = int(o.get("num_gpus") or 1)
+        price = o.get("dph_total")
+        gpus += n
+        if n == 1:
+            single += 1
+        if vast_is_dc(o):
+            dc += n
+        cc = vast_country(o)
+        is_eu = cc in eu
+        reg = by_region.setdefault(region_of(cc), {"gpus": 0, "dc": 0, "prices": []})
+        reg["gpus"] += n
+        if vast_is_dc(o):
+            reg["dc"] += n
+        if price:
+            reg["prices"].append(price / n)
+        if is_eu:
+            eu_g += n
+        if (o.get("inet_down") or 0) >= CONFIG["fast_net_mbps"]:
+            fast += n
+        if (o.get("reliability2") or o.get("reliability") or 0) >= CONFIG["min_reliability"]:
+            rel += n
+        if price:
+            per_gpu.append(price / n)
+            if is_eu:
+                eu_prices.append(price / n)
+    row = {
+        "ts": ts, "gpu": name, "offers": len(offers), "gpus": gpus,
+        "single_gpu_offers": single, "dc_gpus": dc, "eu_gpus": eu_g,
+        "fast_net_gpus": fast, "reliable_gpus": rel,
+        "min_price": r4(min(per_gpu)) if per_gpu else None,
+        "median_price": r4(statistics.median(per_gpu)) if per_gpu else None,
+        "eu_min_price": r4(min(eu_prices)) if eu_prices else None,
+    }
+    region_rows = [{"ts": ts, "gpu": name, "region": reg, "gpus": a["gpus"], "dc_gpus": a["dc"],
+                    "min_price": r4(min(a["prices"])) if a["prices"] else None}
+                   for reg, a in sorted(by_region.items())]
+    return row, region_rows
+
+
+def collect_vast(ts):
+    until = vast_paused_until()
+    if until:
+        raise VastPaused(until)
+    eu = set(CONFIG["eu_countries"])
+    gap = CONFIG.get("vast_call_gap_s", 5)
+    cap = CONFIG.get("vast_result_cap", 512)
+    rows, region_rows = [], []
     try:
+        for i, group in enumerate(vast_groups()):
+            if i:
+                time.sleep(gap)
+            q = {"rentable": {"eq": True}, "rented": {"eq": False}, "type": "on-demand", "limit": 3000,
+                 "gpu_name": {"eq": group[0]} if len(group) == 1 else {"in": group}}
+            offers = vast_search(q)
+            if len(offers) >= cap - 12:
+                print(f"WARNING: {group} returned {len(offers)} offers, near the ~{cap} cap; results may be truncated. "
+                      f"Split this group in config.json.", file=sys.stderr)
+            buckets = {n: [] for n in group}
+            for o in offers:
+                if o.get("gpu_name") in buckets:
+                    buckets[o["gpu_name"]].append(o)
+            for name in group:
+                row, regs = summarise_vast(ts, name, buckets[name], eu)
+                rows.append(row)
+                region_rows += regs
+    finally:
+        # Keep whatever succeeded before a 429.
+        if rows:
+            append_rows(DATA / "vast.csv", VAST_FIELDS, rows)
+            append_rows(shard("vast", ts), VAST_REGION_FIELDS, region_rows)
+
+    # Name discovery costs an extra search, so it only runs when asked (workflow input / VAST_DISCOVER=1).
+    if os.environ.get("VAST_DISCOVER") == "1":
+        time.sleep(gap)
         allo = vast_search({"rentable": {"eq": True}, "rented": {"eq": False},
                             "type": "on-demand", "limit": 5000})
         names = {}
@@ -165,8 +228,6 @@ def collect_vast(ts):
         (DATA / "vast_gpu_names.json").write_text(json.dumps(
             {"ts": ts, "sampled_offers": len(allo),
              "gpus_by_name": dict(sorted(names.items(), key=lambda kv: -kv[1]))}, indent=1))
-    except Exception as e:
-        print(f"vast name discovery failed: {e}", file=sys.stderr)
     return len(rows)
 
 
@@ -190,8 +251,12 @@ query { dataCenters { id name location gpuAvailability { gpuId displayName stock
 
 
 def runpod_wanted(label):
-    wanted = [w.lower() for w in CONFIG["runpod_gpus"]]
-    return not wanted or any(w in label.lower() for w in wanted)
+    """Whole-token match, so "A40" doesn't catch "RTX A4000" and "L40" doesn't catch "L40S"."""
+    lab = label.lower()
+    if any(x.lower() in lab for x in CONFIG.get("runpod_exclude", [])):
+        return False
+    wanted = CONFIG["runpod_gpus"]
+    return not wanted or any(re.search(r"(?<![a-z0-9])" + re.escape(w.lower()) + r"(?![a-z0-9])", lab) for w in wanted)
 
 
 def collect_runpod(ts):
@@ -247,6 +312,9 @@ def main():
     for name, fn in (("vast", collect_vast), ("runpod", collect_runpod)):
         try:
             status[name] = {"ok": True, "rows": fn(ts)}
+        except VastPaused as e:
+            status[name] = {"ok": False, "paused_until": e.until, "error": str(e)[:500]}
+            print(str(e), file=sys.stderr)
         except Exception as e:
             status[name] = {"ok": False, "error": str(e)[:500]}
             print(f"{name} failed: {e}", file=sys.stderr)
