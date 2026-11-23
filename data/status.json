@@ -1,9 +1,8 @@
 {
- "ts": "2026-11-22T23:20:00Z",
+ "ts": "2026-11-23T00:20:00Z",
  "vast": {
-  "ok": false,
-  "paused_until": "2026-11-23T00:00:00Z",
-  "error": "Paused: Vast search limit hit, resumes 2026-11-23T00:00:00Z"
+  "ok": true,
+  "rows": 14
  },
  "runpod": {
   "ok": true,
